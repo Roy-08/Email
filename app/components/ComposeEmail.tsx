@@ -138,7 +138,29 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
 
   const handleAttachmentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      setAttachments((prev) => [...prev, ...Array.from(e.target.files!)]);
+      const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB per file
+      const newFiles = Array.from(e.target.files);
+      const validFiles: File[] = [];
+      const rejectedFiles: string[] = [];
+
+      for (const file of newFiles) {
+        if (file.size > MAX_FILE_SIZE) {
+          rejectedFiles.push(`${file.name} (${formatFileSize(file.size)})`);
+        } else {
+          validFiles.push(file);
+        }
+      }
+
+      if (rejectedFiles.length > 0) {
+        setNotification({
+          message: `The following file(s) exceed 20MB and were not added: ${rejectedFiles.join(", ")}`,
+          type: "warning",
+        });
+      }
+
+      if (validFiles.length > 0) {
+        setAttachments((prev) => [...prev, ...validFiles]);
+      }
     }
     e.target.value = "";
   };
@@ -153,6 +175,24 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
     const sizes = ["B", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  };
+
+  const getFileExtension = (filename: string): string => {
+    const ext = filename.split(".").pop()?.toLowerCase() || "?";
+    return ext.length > 4 ? ext.substring(0, 4) : ext;
+  };
+
+  const getFileColorClass = (filename: string): string => {
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+    if (["pdf"].includes(ext)) return "bg-red-500";
+    if (["doc", "docx"].includes(ext)) return "bg-blue-600";
+    if (["xls", "xlsx", "csv"].includes(ext)) return "bg-green-600";
+    if (["ppt", "pptx"].includes(ext)) return "bg-orange-500";
+    if (["jpg", "jpeg", "png", "gif", "bmp", "svg", "webp"].includes(ext)) return "bg-purple-500";
+    if (["zip", "rar", "7z", "tar", "gz"].includes(ext)) return "bg-yellow-600";
+    if (["dwg", "dxf"].includes(ext)) return "bg-teal-600";
+    if (["mp4", "avi", "mov"].includes(ext)) return "bg-pink-500";
+    return "bg-gray-500";
   };
 
   const fileToBase64 = (file: File): Promise<{ name: string; mimeType: string; base64: string }> => {
@@ -475,22 +515,96 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
           <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[var(--primary)] text-white text-[13px] font-bold">2</span>
           <span className="material-icons-outlined text-[20px] text-[var(--primary)]">attach_file</span>
           Attachments (Optional)
+          {attachments.length > 0 && (
+            <span className="ml-auto text-[12px] font-semibold text-[var(--primary)] bg-[#e3f2fd] px-2.5 py-1 rounded-full">
+              {attachments.length} file{attachments.length > 1 ? "s" : ""} • {formatFileSize(attachments.reduce((sum, f) => sum + f.size, 0))}
+            </span>
+          )}
         </div>
-        <label className="block border border-dashed border-[var(--border)] rounded-md p-5 text-center cursor-pointer bg-[#fafbfc] hover:border-[var(--primary)] hover:bg-[var(--primary-glow)] transition-all">
-          <span className="material-icons-outlined text-[28px] text-[var(--text-muted)]">cloud_upload</span>
-          <p className="text-[13px] font-semibold text-[var(--text-primary)] mt-1.5">Click to upload attachments</p>
-          <p className="text-[11px] text-[var(--text-muted)] mt-0.5">or drag & drop files here</p>
+
+        <label className="block border-2 border-dashed border-[var(--border)] rounded-lg p-6 text-center cursor-pointer bg-[#fafbfc] hover:border-[var(--primary)] hover:bg-[var(--primary-glow)] transition-all">
+          <span className="material-icons-outlined text-[36px] text-[var(--text-muted)]">cloud_upload</span>
+          <p className="text-[14px] font-semibold text-[var(--text-primary)] mt-2">Click to upload attachments</p>
+          <p className="text-[12px] text-[var(--text-muted)] mt-1">PDF, Images, Excel, Word, ZIP — Max 20MB per file</p>
           <input type="file" multiple className="hidden" onChange={handleAttachmentUpload} />
         </label>
+
+        {/* Total size warning */}
+        {attachments.length > 0 && attachments.reduce((sum, f) => sum + f.size, 0) > 20 * 1024 * 1024 && (
+          <div className="mt-3 p-3 bg-[#fff3e0] border border-[#ffcc80] rounded-md flex items-center gap-2 text-[12px] text-[#e65100]">
+            <span className="material-icons-outlined text-[18px]">warning</span>
+            <span><strong>Warning:</strong> Total attachment size exceeds 20MB. Some email providers may reject large emails. Consider reducing file sizes.</span>
+          </div>
+        )}
+
+        {/* Attachment list */}
         {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-2.5">
-            {attachments.map((file, idx) => (
-              <div key={idx} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#e3f2fd] border border-[var(--primary-light)] rounded-full text-[12px] text-[var(--primary-dark)] font-medium">
-                <span className="material-icons-outlined text-[14px]">insert_drive_file</span>
-                <span>{file.name} ({formatFileSize(file.size)})</span>
-                <span className="cursor-pointer text-[14px] opacity-70 hover:opacity-100 hover:text-[var(--danger)] font-bold" onClick={() => removeAttachment(idx)}>✕</span>
-              </div>
-            ))}
+          <div className="mt-4">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[13px] font-semibold text-[var(--text-primary)] flex items-center gap-1.5">
+                <span className="material-icons-outlined text-[16px]">folder_open</span>
+                Files to be sent with email:
+              </label>
+              {attachments.length > 1 && (
+                <button
+                  onClick={() => setAttachments([])}
+                  className="px-3 py-1 text-[11px] border border-[var(--danger)] text-[var(--danger)] rounded-md bg-transparent hover:bg-red-50 cursor-pointer font-semibold transition-all"
+                >
+                  Remove All
+                </button>
+              )}
+            </div>
+            <div className="border border-[var(--border)] rounded-md overflow-hidden">
+              {attachments.map((file, idx) => (
+                <div
+                  key={idx}
+                  className={`flex items-center gap-3 px-4 py-3 ${idx !== attachments.length - 1 ? "border-b border-[var(--border-light)]" : ""} hover:bg-[#f5f7fa] transition-colors`}
+                >
+                  {/* File type icon */}
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-white text-[11px] font-bold uppercase shrink-0 ${getFileColorClass(file.name)}`}>
+                    {getFileExtension(file.name)}
+                  </div>
+
+                  {/* File info */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-[var(--text-primary)] truncate">{file.name}</p>
+                    <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                      {formatFileSize(file.size)} • {file.type || "Unknown type"}
+                    </p>
+                  </div>
+
+                  {/* Size indicator bar */}
+                  <div className="hidden sm:block w-[60px]">
+                    <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${file.size > 10 * 1024 * 1024 ? "bg-[var(--danger)]" : file.size > 5 * 1024 * 1024 ? "bg-[#ff9800]" : "bg-[var(--success)]"}`}
+                        style={{ width: `${Math.min((file.size / (20 * 1024 * 1024)) * 100, 100)}%` }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  {/* Remove button */}
+                  <button
+                    onClick={() => removeAttachment(idx)}
+                    className="w-7 h-7 rounded-full flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--danger)] hover:bg-red-50 transition-all shrink-0"
+                    title="Remove attachment"
+                  >
+                    <span className="material-icons-outlined text-[18px]">close</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Summary footer */}
+            <div className="mt-2.5 flex items-center justify-between text-[12px] text-[var(--text-muted)]">
+              <span className="flex items-center gap-1">
+                <span className="material-icons-outlined text-[14px]">info</span>
+                {attachments.length} attachment{attachments.length > 1 ? "s" : ""} will be sent to each selected vendor
+              </span>
+              <span className="font-semibold text-[var(--text-secondary)]">
+                Total: {formatFileSize(attachments.reduce((sum, f) => sum + f.size, 0))}
+              </span>
+            </div>
           </div>
         )}
       </div>
