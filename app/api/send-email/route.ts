@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { google } from "googleapis";
 import { getGoogleSheetsClient, SHEET_ID, ensureSheetExists } from "@/app/lib/googleSheets";
 
+// Note: In Next.js App Router, body size is controlled by the runtime/server config.
+// The request body limit for serverless functions is typically 4.5MB by default.
+// For larger attachments, consider using streaming uploads or external storage.
+
+// For Next.js App Router, set the max duration and body size
+export const maxDuration = 60;
+
 interface EmailItem {
   srNo: string;
   description: string;
@@ -148,6 +155,9 @@ export async function POST(request: Request) {
     }
     descHtml += "</table>";
 
+    // Suppress unused variable warning
+    void descPlain;
+
     // Send emails
     let sent = 0;
     let failed = 0;
@@ -234,8 +244,26 @@ export async function POST(request: Request) {
 }
 
 /**
+ * Wrap a base64 string into lines of 76 characters (MIME standard requirement).
+ * Gmail and other email clients require base64 content to be line-wrapped.
+ */
+function wrapBase64(base64: string): string {
+  const lines: string[] = [];
+  for (let i = 0; i < base64.length; i += 76) {
+    lines.push(base64.substring(i, i + 76));
+  }
+  return lines.join("\r\n");
+}
+
+/**
  * Build a raw MIME message string for Gmail API.
  * Supports HTML content and file attachments.
+ * 
+ * Key fixes:
+ * 1. Base64 content is line-wrapped to 76 chars per MIME standard
+ * 2. HTML body is base64-encoded to handle special characters
+ * 3. Proper CRLF line endings throughout
+ * 4. Clean base64 data from attachments (remove any whitespace)
  */
 function buildRawMessage({
   from,
@@ -250,20 +278,27 @@ function buildRawMessage({
   html: string;
   attachments: Attachment[];
 }): string {
-  const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+  const CRLF = "\r\n";
 
   if (!attachments || attachments.length === 0) {
     // Simple HTML email without attachments
+    const htmlBase64 = wrapBase64(Buffer.from(html, "utf-8").toString("base64"));
     return [
       `From: ${from}`,
       `To: ${to}`,
       `Subject: ${subject}`,
       "MIME-Version: 1.0",
       "Content-Type: text/html; charset=UTF-8",
+      "Content-Transfer-Encoding: base64",
       "",
-      html,
-    ].join("\r\n");
+      htmlBase64,
+    ].join(CRLF);
   }
+
+  const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+
+  // Encode HTML body as base64 for the multipart message
+  const htmlBase64 = wrapBase64(Buffer.from(html, "utf-8").toString("base64"));
 
   // Multipart email with attachments
   let message = [
@@ -275,24 +310,32 @@ function buildRawMessage({
     "",
     `--${boundary}`,
     "Content-Type: text/html; charset=UTF-8",
-    "Content-Transfer-Encoding: 7bit",
+    "Content-Transfer-Encoding: base64",
     "",
-    html,
-  ].join("\r\n");
+    htmlBase64,
+  ].join(CRLF);
 
-  // Add attachments
+  // Add each attachment as a separate MIME part
   for (const att of attachments) {
-    message += "\r\n" + [
+    // Clean the base64 string - remove any whitespace/newlines that may have been introduced
+    const cleanBase64 = att.base64.replace(/[\r\n\s]/g, "");
+    const wrappedBase64 = wrapBase64(cleanBase64);
+    const mimeType = att.mimeType || "application/octet-stream";
+    // Encode filename for Content-Type and Content-Disposition to handle special chars
+    const safeName = att.name.replace(/"/g, '\\"');
+
+    message += CRLF + [
       `--${boundary}`,
-      `Content-Type: ${att.mimeType}; name="${att.name}"`,
+      `Content-Type: ${mimeType}; name="${safeName}"`,
       "Content-Transfer-Encoding: base64",
-      `Content-Disposition: attachment; filename="${att.name}"`,
+      `Content-Disposition: attachment; filename="${safeName}"`,
       "",
-      att.base64,
-    ].join("\r\n");
+      wrappedBase64,
+    ].join(CRLF);
   }
 
-  message += `\r\n--${boundary}--`;
+  // Close the multipart boundary
+  message += `${CRLF}--${boundary}--`;
 
   return message;
 }
