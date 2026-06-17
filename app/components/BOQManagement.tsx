@@ -52,24 +52,46 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
       try {
         const data = new Uint8Array(e.target!.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: "array" });
-        const sheetName = workbook.SheetNames[0];
+        // Prefer "Sheet1" tab if it exists, otherwise fall back to the first sheet
+        const sheetName = workbook.SheetNames.find(
+          (name) => name.toLowerCase() === "sheet1" || name.toLowerCase() === "sheet 1"
+        ) || workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const jsonData: string[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
 
-        if (jsonData.length < 6) {
+        if (jsonData.length < 3) {
           hideLoading();
-          setNotification({ message: "File has too few rows. Expected headers at row 5 and data from row 6.", type: "error" });
+          setNotification({ message: "File has too few rows.", type: "error" });
           return;
         }
 
+        // Search for header row across a wider range (rows 0-20) to handle various Excel formats
         let headerRow: string[] | null = null;
         let headerIndex = -1;
 
-        for (let h = 3; h <= 6; h++) {
-          if (h < jsonData.length) {
-            const rowStr = jsonData[h].join(" ").toLowerCase();
+        for (let h = 0; h < Math.min(jsonData.length, 20); h++) {
+          const row = jsonData[h];
+          if (!row || row.length === 0) continue;
+          const rowStr = row.join(" ").toLowerCase();
+          // Look for a row that contains both "item description" (or "description") AND "unit" AND "qty"
+          const hasDescription = rowStr.indexOf("item description") !== -1 || rowStr.indexOf("description") !== -1;
+          const hasUnit = rowStr.indexOf("unit") !== -1;
+          const hasQty = rowStr.indexOf("qty") !== -1 || rowStr.indexOf("quantity") !== -1;
+          if (hasDescription && hasUnit && hasQty) {
+            headerRow = row;
+            headerIndex = h;
+            break;
+          }
+        }
+
+        // Fallback: search for just "item description" or "description"
+        if (!headerRow) {
+          for (let h = 0; h < Math.min(jsonData.length, 20); h++) {
+            const row = jsonData[h];
+            if (!row || row.length === 0) continue;
+            const rowStr = row.join(" ").toLowerCase();
             if (rowStr.indexOf("item description") !== -1 || rowStr.indexOf("description") !== -1) {
-              headerRow = jsonData[h];
+              headerRow = row;
               headerIndex = h;
               break;
             }
@@ -77,33 +99,57 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
         }
 
         if (!headerRow) {
-          headerRow = jsonData[4];
-          headerIndex = 4;
+          headerRow = jsonData[4] || jsonData[0];
+          headerIndex = jsonData[4] ? 4 : 0;
         }
 
         const colMap = { srNo: -1, description: -1, unit: -1, qty: -1, itemName: -1 };
 
         for (let c = 0; c < headerRow.length; c++) {
-          const colName = headerRow[c].toString().toLowerCase().trim();
-          if (colName.indexOf("sr") !== -1 && colName.indexOf("no") !== -1) colMap.srNo = c;
+          const colName = (headerRow[c] || "").toString().toLowerCase().trim();
+          if (!colName) continue;
+          if ((colName.indexOf("sr") !== -1 && colName.indexOf("no") !== -1) || colName === "sr.\nno." || colName === "sr. no.") colMap.srNo = c;
           else if (colName.indexOf("item description") !== -1 || (colName.indexOf("description") !== -1 && colMap.description === -1)) colMap.description = c;
           else if (colName === "unit") colMap.unit = c;
           else if (colName === "qty" || colName === "quantity") colMap.qty = c;
-          else if (colName.indexOf("item name") !== -1) colMap.itemName = c;
+          else if (colName.indexOf("item name") !== -1 || colName === "item name") colMap.itemName = c;
         }
+
+        // Debug: log column mapping to console for troubleshooting
+        console.log("Header found at row index:", headerIndex, "Header row:", headerRow);
+        console.log("Column mapping:", colMap);
 
         const parsed: UploadedRow[] = [];
         for (let r = headerIndex + 1; r < jsonData.length; r++) {
           const dataRow = jsonData[r];
-          const desc = colMap.description >= 0 ? dataRow[colMap.description] : "";
-          if (!desc || desc.toString().trim() === "") continue;
+          if (!dataRow || dataRow.length === 0) continue;
+
+          const desc = colMap.description >= 0 ? (dataRow[colMap.description] || "").toString().trim() : "";
+          const unit = colMap.unit >= 0 ? (dataRow[colMap.unit] || "").toString().trim() : "";
+          const qty = colMap.qty >= 0 ? (dataRow[colMap.qty] || "").toString().trim() : "";
+          const itemName = colMap.itemName >= 0 ? (dataRow[colMap.itemName] || "").toString().trim() : "";
+
+          // A row is valid if it has Item Description, Unit, AND Qty filled
+          // Item Name is included if available but not required for row validation
+          if (!desc || !unit || !qty) continue;
+
+          // Validate that qty is actually a number (skip rows where qty column has non-numeric text like "-")
+          const qtyNum = parseFloat(qty.replace(/,/g, ""));
+          if (isNaN(qtyNum) || qtyNum <= 0) continue;
+
+          // Skip sub-total or summary rows
+          const descLower = desc.toLowerCase();
+          if (descLower.includes("sub - total") || descLower.includes("sub-total") || descLower.includes("subtotal") || descLower.includes("grand total")) continue;
+
+          // Skip section header rows (e.g., "SCHEDULE OF QUANTITIES", "GENERAL NOTES", section titles without real data)
+          if (descLower.includes("schedule of quantities") || descLower.includes("general notes")) continue;
 
           parsed.push({
-            srNo: colMap.srNo >= 0 ? dataRow[colMap.srNo].toString() : (parsed.length + 1).toString(),
-            description: desc.toString().trim(),
-            unit: colMap.unit >= 0 ? dataRow[colMap.unit].toString().trim() : "",
-            qty: colMap.qty >= 0 ? dataRow[colMap.qty].toString().trim() : "",
-            itemName: colMap.itemName >= 0 ? dataRow[colMap.itemName].toString().trim() : "",
+            srNo: colMap.srNo >= 0 ? (dataRow[colMap.srNo] || "").toString() : (parsed.length + 1).toString(),
+            description: desc,
+            unit: unit,
+            qty: qty,
+            itemName: itemName,
           });
         }
 
@@ -206,7 +252,7 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
         <label className="block border-2 border-dashed border-[var(--border)] rounded-lg p-8 text-center cursor-pointer bg-[#fafbfc] hover:border-[var(--primary)] hover:bg-[var(--primary-glow)] transition-all">
           <span className="material-icons-outlined text-[40px] text-[var(--text-muted)]">upload_file</span>
           <p className="text-sm font-semibold text-[var(--text-primary)] mt-2">Click to upload or drag & drop Excel file here</p>
-          <p className="text-[12px] text-[var(--text-muted)] mt-1">Supports .xlsx, .xls files • Row 5 should have headers: Sr. No., Item Description, Unit, Qty, Item Name</p>
+          <p className="text-[12px] text-[var(--text-muted)] mt-1">Supports .xlsx, .xls files • Headers auto-detected: Sr. No., Item Description, Unit, Qty, Item Name</p>
           <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFileUpload} />
         </label>
 
