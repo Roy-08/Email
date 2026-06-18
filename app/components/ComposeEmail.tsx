@@ -42,6 +42,7 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
   const [sending, setSending] = useState(false);
   const [popup, setPopup] = useState<{ sent: number; failed: number; errors: string[] } | null>(null);
   const [senderEmail, setSenderEmail] = useState<string>(SENDER_OPTIONS[0]);
+  const [ccEmails, setCcEmails] = useState<string>("");
 
   const autoSubject = selectedBOQ && selectedItemName ? `Q- ${selectedBOQ} Inquiry For ${selectedItemName}` : "";
 
@@ -235,6 +236,12 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
         qty: item.qty,
       }));
 
+      // Parse and clean CC emails
+      const ccList = ccEmails
+        .split(",")
+        .map((e) => e.trim())
+        .filter((e) => e.length > 0 && e.includes("@"));
+
       const res = await fetch("/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -244,6 +251,7 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
           vendors: chosenVendors,
           attachments: attachmentData,
           senderEmail,
+          cc: ccList,
         }),
       });
       const result = await res.json();
@@ -331,6 +339,24 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
             ))}
           </select>
           <p className="mt-1 text-[12px] text-[var(--text-muted)]">Emails will be sent from the selected sender address.</p>
+        </div>
+
+        {/* CC Field */}
+        <div className="mb-4">
+          <label className="block font-semibold mb-1.5 text-[var(--text-primary)] text-[13px]">
+            CC (Optional)
+          </label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 material-icons-outlined text-[18px] text-[var(--text-muted)]">group_add</span>
+            <input
+              type="text"
+              value={ccEmails}
+              onChange={(e) => setCcEmails(e.target.value)}
+              placeholder="e.g. manager@company.com, team@company.com"
+              className="w-full p-2.5 pl-10 pr-3.5 border border-[var(--border)] rounded-md text-sm bg-white text-[var(--text-primary)] focus:outline-none focus:border-[var(--primary)] focus:shadow-[0_0_0_3px_var(--primary-glow)]"
+            />
+          </div>
+          <p className="mt-1 text-[12px] text-[var(--text-muted)]">Add CC recipients separated by commas. These addresses will receive a copy of every email sent.</p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
