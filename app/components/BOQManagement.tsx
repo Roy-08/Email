@@ -51,15 +51,17 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target!.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: "array" });
+        const workbook = XLSX.read(data, { type: "array", cellDates: false });
         // Prefer "Sheet1" tab if it exists, otherwise fall back to the first sheet
         const sheetName = workbook.SheetNames.find(
           (name) => name.toLowerCase() === "sheet1" || name.toLowerCase() === "sheet 1"
         ) || workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
-        const jsonData: string[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+        // Use raw:true to get actual cell values without formatting issues
+        // Use defval:"" to ensure empty cells are represented as empty strings
+        const jsonData: (string | number)[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: true });
 
-        if (jsonData.length < 3) {
+        if (jsonData.length < 2) {
           hideLoading();
           setNotification({ message: "File has too few rows.", type: "error" });
           return;
@@ -72,13 +74,13 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
         for (let h = 0; h < Math.min(jsonData.length, 20); h++) {
           const row = jsonData[h];
           if (!row || row.length === 0) continue;
-          const rowStr = row.join(" ").toLowerCase();
+          const rowStr = row.map(cell => String(cell || "")).join(" ").toLowerCase();
           // Look for a row that contains both "item description" (or "description") AND "unit" AND "qty"
           const hasDescription = rowStr.indexOf("item description") !== -1 || rowStr.indexOf("description") !== -1;
           const hasUnit = rowStr.indexOf("unit") !== -1;
           const hasQty = rowStr.indexOf("qty") !== -1 || rowStr.indexOf("quantity") !== -1;
           if (hasDescription && hasUnit && hasQty) {
-            headerRow = row;
+            headerRow = row.map(cell => String(cell || ""));
             headerIndex = h;
             break;
           }
@@ -89,9 +91,9 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
           for (let h = 0; h < Math.min(jsonData.length, 20); h++) {
             const row = jsonData[h];
             if (!row || row.length === 0) continue;
-            const rowStr = row.join(" ").toLowerCase();
+            const rowStr = row.map(cell => String(cell || "")).join(" ").toLowerCase();
             if (rowStr.indexOf("item description") !== -1 || rowStr.indexOf("description") !== -1) {
-              headerRow = row;
+              headerRow = row.map(cell => String(cell || ""));
               headerIndex = h;
               break;
             }
@@ -99,20 +101,69 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
         }
 
         if (!headerRow) {
-          headerRow = jsonData[4] || jsonData[0];
+          const fallbackRow = jsonData[4] || jsonData[0];
+          headerRow = fallbackRow ? fallbackRow.map(cell => String(cell || "")) : [];
           headerIndex = jsonData[4] ? 4 : 0;
         }
 
         const colMap = { srNo: -1, description: -1, unit: -1, qty: -1, itemName: -1 };
 
         for (let c = 0; c < headerRow.length; c++) {
-          const colName = (headerRow[c] || "").toString().toLowerCase().trim();
+          const colName = (headerRow[c] || "").toString().toLowerCase().trim()
+            .replace(/\r?\n/g, " ")  // Handle line breaks within cells
+            .replace(/\s+/g, " ");   // Normalize whitespace
           if (!colName) continue;
-          if ((colName.indexOf("sr") !== -1 && colName.indexOf("no") !== -1) || colName === "sr.\nno." || colName === "sr. no.") colMap.srNo = c;
-          else if (colName.indexOf("item description") !== -1 || (colName.indexOf("description") !== -1 && colMap.description === -1)) colMap.description = c;
-          else if (colName === "unit") colMap.unit = c;
-          else if (colName === "qty" || colName === "quantity") colMap.qty = c;
-          else if (colName.indexOf("item name") !== -1 || colName === "item name") colMap.itemName = c;
+          
+          // Sr. No. detection - various formats
+          if (colMap.srNo === -1) {
+            if ((colName.indexOf("sr") !== -1 && colName.indexOf("no") !== -1) || 
+                colName === "s.no" || colName === "s.no." || colName === "sno" ||
+                colName === "sl no" || colName === "sl.no" || colName === "sl. no." ||
+                colName === "#" || colName === "no." || colName === "no") {
+              colMap.srNo = c;
+              continue;
+            }
+          }
+          
+          // Item Name detection (check before description to avoid conflicts)
+          if (colMap.itemName === -1) {
+            if (colName === "item name" || colName === "itemname" || 
+                colName === "item_name" || colName === "material name" ||
+                (colName.indexOf("item") !== -1 && colName.indexOf("name") !== -1 && colName.indexOf("description") === -1)) {
+              colMap.itemName = c;
+              continue;
+            }
+          }
+          
+          // Description detection
+          if (colMap.description === -1) {
+            if (colName.indexOf("item description") !== -1 || 
+                colName.indexOf("description") !== -1 ||
+                colName === "particulars" ||
+                colName.indexOf("work description") !== -1 ||
+                colName.indexOf("scope of work") !== -1) {
+              colMap.description = c;
+              continue;
+            }
+          }
+          
+          // Unit detection
+          if (colMap.unit === -1) {
+            if (colName === "unit" || colName === "uom" || colName === "units") {
+              colMap.unit = c;
+              continue;
+            }
+          }
+          
+          // Qty detection
+          if (colMap.qty === -1) {
+            if (colName === "qty" || colName === "quantity" || colName === "qty." ||
+                colName === "total qty" || colName === "total quantity" ||
+                (colName.indexOf("qty") !== -1) || (colName.indexOf("quantity") !== -1)) {
+              colMap.qty = c;
+              continue;
+            }
+          }
         }
 
         // Debug: log column mapping to console for troubleshooting
@@ -123,29 +174,41 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
         for (let r = headerIndex + 1; r < jsonData.length; r++) {
           const dataRow = jsonData[r];
           if (!dataRow || dataRow.length === 0) continue;
+          
+          // Skip completely empty rows (all cells empty)
+          const hasAnyContent = dataRow.some((cell) => String(cell ?? "").trim() !== "");
+          if (!hasAnyContent) continue;
 
-          const desc = colMap.description >= 0 ? (dataRow[colMap.description] || "").toString().trim() : "";
-          const unit = colMap.unit >= 0 ? (dataRow[colMap.unit] || "").toString().trim() : "";
-          const qty = colMap.qty >= 0 ? (dataRow[colMap.qty] || "").toString().trim() : "";
-          const itemName = colMap.itemName >= 0 ? (dataRow[colMap.itemName] || "").toString().trim() : "";
+          const desc = colMap.description >= 0 ? String(dataRow[colMap.description] ?? "").trim() : "";
+          const unit = colMap.unit >= 0 ? String(dataRow[colMap.unit] ?? "").trim() : "";
+          const qty = colMap.qty >= 0 ? String(dataRow[colMap.qty] ?? "").trim() : "";
+          const itemName = colMap.itemName >= 0 ? String(dataRow[colMap.itemName] ?? "").trim() : "";
 
-          // A row is valid if it has Item Description, Unit, AND Qty filled
-          // Item Name is included if available but not required for row validation
-          if (!desc || !unit || !qty) continue;
+          // A row is valid if it has at least Item Description AND Qty filled
+          // Unit can sometimes be empty for certain items, so we only require desc + qty
+          if (!desc || !qty) continue;
 
-          // Validate that qty is actually a number (skip rows where qty column has non-numeric text like "-")
-          const qtyNum = parseFloat(qty.replace(/,/g, ""));
-          if (isNaN(qtyNum) || qtyNum <= 0) continue;
+          // Extract numeric value from qty - handle formats like "4", "4.0", "4,000", "4 nos", "4.00 sqm" etc.
+          const qtyClean = qty.replace(/,/g, "").replace(/[^0-9.\-]/g, " ").trim().split(/\s+/)[0];
+          const qtyNum = parseFloat(qtyClean);
+          
+          // Only skip if qty is truly not a number at all (like "-" or pure text)
+          // Allow qty = 0 if explicitly stated, but skip NaN
+          if (isNaN(qtyNum)) continue;
 
-          // Skip sub-total or summary rows
-          const descLower = desc.toLowerCase();
-          if (descLower.includes("sub - total") || descLower.includes("sub-total") || descLower.includes("subtotal") || descLower.includes("grand total")) continue;
+          // Skip sub-total or summary rows - use stricter matching to avoid false positives
+          const descLower = desc.toLowerCase().trim();
+          // Only skip if the description IS a total/subtotal line (starts with or is primarily about totals)
+          const isTotalRow = /^(sub\s*-?\s*total|subtotal|grand\s*total|total)\b/i.test(descLower) ||
+            /\b(sub\s*-?\s*total|subtotal|grand\s*total)\s*[:=]?\s*$/i.test(descLower);
+          if (isTotalRow) continue;
 
-          // Skip section header rows (e.g., "SCHEDULE OF QUANTITIES", "GENERAL NOTES", section titles without real data)
-          if (descLower.includes("schedule of quantities") || descLower.includes("general notes")) continue;
+          // Skip section header rows only if they EXACTLY match known headers (not as substrings)
+          const isSectionHeader = /^(schedule of quantities|general notes)\s*$/i.test(descLower);
+          if (isSectionHeader) continue;
 
           parsed.push({
-            srNo: colMap.srNo >= 0 ? (dataRow[colMap.srNo] || "").toString() : (parsed.length + 1).toString(),
+            srNo: colMap.srNo >= 0 ? String(dataRow[colMap.srNo] ?? "") : (parsed.length + 1).toString(),
             description: desc,
             unit: unit,
             qty: qty,
@@ -260,14 +323,14 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
         {uploadedData.length > 0 && (
           <div className="mt-4">
             <div className="flex justify-between items-center mb-2.5">
-              <label className="text-[13px] m-0 font-semibold">Preview (first 20 rows):</label>
+              <label className="text-[13px] m-0 font-semibold">Preview ({uploadedData.length} items total):</label>
               <button onClick={confirmUpload} className="px-4 py-2 bg-[var(--success)] text-white rounded-md text-[13px] font-semibold cursor-pointer hover:bg-[#1b5e20] inline-flex items-center gap-1.5">
                 <span className="material-icons-outlined text-[16px]">check_circle</span> Confirm & Save BOQ
               </button>
             </div>
-            <div className="overflow-x-auto rounded-md border border-[var(--border)]">
+            <div className="overflow-x-auto rounded-md border border-[var(--border)] max-h-[500px] overflow-y-auto">
               <table className="w-full border-collapse text-[13px]">
-                <thead>
+                <thead className="sticky top-0">
                   <tr>
                     <th className="bg-[#f5f7fa] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Sr No.</th>
                     <th className="bg-[#f5f7fa] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Item Description</th>
@@ -277,7 +340,7 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
                   </tr>
                 </thead>
                 <tbody>
-                  {uploadedData.slice(0, 20).map((row, idx) => (
+                  {uploadedData.map((row, idx) => (
                     <tr key={idx} className="hover:bg-[var(--primary-glow)]">
                       <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.srNo}</td>
                       <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.description.substring(0, 150)}</td>
@@ -289,7 +352,7 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
                 </tbody>
               </table>
             </div>
-            <p className="mt-2 text-[12px] text-[var(--text-muted)]">Showing {Math.min(uploadedData.length, 20)} of {uploadedData.length} items</p>
+            <p className="mt-2 text-[12px] text-[var(--text-muted)]">Total: {uploadedData.length} items will be uploaded</p>
           </div>
         )}
       </div>
