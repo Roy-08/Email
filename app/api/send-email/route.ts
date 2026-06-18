@@ -69,12 +69,13 @@ const DEFAULT_SENDER: SenderEmail = "inquiry@saraswateng.com";
 
 export async function POST(request: Request) {
   try {
-    const { subject, items, vendors, attachments, senderEmail } = (await request.json()) as {
+    const { subject, items, vendors, attachments, senderEmail, cc } = (await request.json()) as {
       subject: string;
       items: EmailItem[];
       vendors: Vendor[];
       attachments: Attachment[];
       senderEmail?: string;
+      cc?: string[];
     };
 
     if (!subject || !subject.trim()) {
@@ -180,9 +181,11 @@ export async function POST(request: Request) {
         const html = `<p>Dear Sir,<br><strong>${companyName}</strong><br>(${mobileText})</p><p>Please provide best offer for the following:</p><br>${descHtml}<p style="font-weight: 400;"><span style="color: #000000;">Regards,</span><br /><strong><span style="color: #000000; background-color: #ffff00;">${senderAccount.signature.regardsName}</span></strong><br /><strong><span style="color: #000000; background-color: #ffff00;">${senderAccount.signature.mobile}</span></strong><br /><span style="text-decoration: underline; color: #333399;"><strong>Saraswat Engineering Services</strong></span><br /><span style="text-decoration: underline;"><span style="color: #ff0000; text-decoration: underline;">Together We Grow</span></span><br />An ISO 9001:2015 Certified Company<br /><span style="color: #008080;">Maharashtra GSTIN \u2013 27AAZFS6239C1ZO (Alphabet \u2018O\u2019)</span><br />${addressHtml}<br /><span style="color: #008080;"><strong>E-mail ID</strong> : ${senderAccount.email}</span><br /><span style="color: #008080;"><strong>Website</strong> : www.saraswateng.com</span></p>`;
 
         // Build raw MIME message
+        const ccString = cc && cc.length > 0 ? cc.join(", ") : undefined;
         const rawMessage = buildRawMessage({
           from: `"Saraswat Engineering Services" <${senderAccount.email}>`,
           to: vendor.email,
+          cc: ccString,
           subject,
           html,
           attachments: attachments || [],
@@ -268,12 +271,14 @@ function wrapBase64(base64: string): string {
 function buildRawMessage({
   from,
   to,
+  cc,
   subject,
   html,
   attachments,
 }: {
   from: string;
   to: string;
+  cc?: string;
   subject: string;
   html: string;
   attachments: Attachment[];
@@ -283,16 +288,20 @@ function buildRawMessage({
   if (!attachments || attachments.length === 0) {
     // Simple HTML email without attachments
     const htmlBase64 = wrapBase64(Buffer.from(html, "utf-8").toString("base64"));
-    return [
+    const headers = [
       `From: ${from}`,
       `To: ${to}`,
+    ];
+    if (cc) headers.push(`Cc: ${cc}`);
+    headers.push(
       `Subject: ${subject}`,
       "MIME-Version: 1.0",
       "Content-Type: text/html; charset=UTF-8",
       "Content-Transfer-Encoding: base64",
       "",
       htmlBase64,
-    ].join(CRLF);
+    );
+    return headers.join(CRLF);
   }
 
   const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2)}`;
@@ -301,9 +310,12 @@ function buildRawMessage({
   const htmlBase64 = wrapBase64(Buffer.from(html, "utf-8").toString("base64"));
 
   // Multipart email with attachments
-  let message = [
+  const headers = [
     `From: ${from}`,
     `To: ${to}`,
+  ];
+  if (cc) headers.push(`Cc: ${cc}`);
+  headers.push(
     `Subject: ${subject}`,
     "MIME-Version: 1.0",
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
@@ -313,7 +325,8 @@ function buildRawMessage({
     "Content-Transfer-Encoding: base64",
     "",
     htmlBase64,
-  ].join(CRLF);
+  );
+  let message = headers.join(CRLF);
 
   // Add each attachment as a separate MIME part
   for (const att of attachments) {
