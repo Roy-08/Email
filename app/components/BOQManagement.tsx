@@ -21,6 +21,7 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
   const [boqList, setBoqList] = useState<string[]>([]);
   const [boqNumber, setBoqNumber] = useState("");
   const [uploadedData, setUploadedData] = useState<UploadedRow[]>([]);
+  const [skippedData, setSkippedData] = useState<UploadedRow[]>([]);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "warning" | "info" } | null>(null);
   const [deleteNotification, setDeleteNotification] = useState<{ message: string; type: "success" | "error" | "warning" | "info" } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
@@ -52,13 +53,10 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
       try {
         const data = new Uint8Array(e.target!.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: "array", cellDates: false });
-        // Prefer "Sheet1" tab if it exists, otherwise fall back to the first sheet
         const sheetName = workbook.SheetNames.find(
           (name) => name.toLowerCase() === "sheet1" || name.toLowerCase() === "sheet 1"
         ) || workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
-        // Use raw:true to get actual cell values without formatting issues
-        // Use defval:"" to ensure empty cells are represented as empty strings
         const jsonData: (string | number)[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: true });
 
         if (jsonData.length < 2) {
@@ -67,7 +65,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
           return;
         }
 
-        // Search for header row across a wider range (rows 0-20) to handle various Excel formats
         let headerRow: string[] | null = null;
         let headerIndex = -1;
 
@@ -75,7 +72,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
           const row = jsonData[h];
           if (!row || row.length === 0) continue;
           const rowStr = row.map(cell => String(cell || "")).join(" ").toLowerCase();
-          // Look for a row that contains both "item description" (or "description") AND "unit" AND "qty"
           const hasDescription = rowStr.indexOf("item description") !== -1 || rowStr.indexOf("description") !== -1;
           const hasUnit = rowStr.indexOf("unit") !== -1;
           const hasQty = rowStr.indexOf("qty") !== -1 || rowStr.indexOf("quantity") !== -1;
@@ -86,7 +82,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
           }
         }
 
-        // Fallback: search for just "item description" or "description"
         if (!headerRow) {
           for (let h = 0; h < Math.min(jsonData.length, 20); h++) {
             const row = jsonData[h];
@@ -110,11 +105,10 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
 
         for (let c = 0; c < headerRow.length; c++) {
           const colName = (headerRow[c] || "").toString().toLowerCase().trim()
-            .replace(/\r?\n/g, " ")  // Handle line breaks within cells
-            .replace(/\s+/g, " ");   // Normalize whitespace
+            .replace(/\r?\n/g, " ")
+            .replace(/\s+/g, " ");
           if (!colName) continue;
           
-          // Sr. No. detection - various formats
           if (colMap.srNo === -1) {
             if ((colName.indexOf("sr") !== -1 && colName.indexOf("no") !== -1) || 
                 colName === "s.no" || colName === "s.no." || colName === "sno" ||
@@ -125,7 +119,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
             }
           }
           
-          // Item Name detection (check before description to avoid conflicts)
           if (colMap.itemName === -1) {
             if (colName === "item name" || colName === "itemname" || 
                 colName === "item_name" || colName === "material name" ||
@@ -135,7 +128,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
             }
           }
           
-          // Description detection
           if (colMap.description === -1) {
             if (colName.indexOf("item description") !== -1 || 
                 colName.indexOf("description") !== -1 ||
@@ -147,7 +139,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
             }
           }
           
-          // Unit detection
           if (colMap.unit === -1) {
             if (colName === "unit" || colName === "uom" || colName === "units") {
               colMap.unit = c;
@@ -155,7 +146,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
             }
           }
           
-          // Qty detection
           if (colMap.qty === -1) {
             if (colName === "qty" || colName === "quantity" || colName === "qty." ||
                 colName === "total qty" || colName === "total quantity" ||
@@ -166,7 +156,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
           }
         }
 
-        // Debug: log column mapping to console for troubleshooting
         console.log("Header found at row index:", headerIndex, "Header row:", headerRow);
         console.log("Column mapping:", colMap);
 
@@ -175,7 +164,6 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
           const dataRow = jsonData[r];
           if (!dataRow || dataRow.length === 0) continue;
           
-          // Skip completely empty rows (all cells empty)
           const hasAnyContent = dataRow.some((cell) => String(cell ?? "").trim() !== "");
           if (!hasAnyContent) continue;
 
@@ -184,26 +172,14 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
           const qty = colMap.qty >= 0 ? String(dataRow[colMap.qty] ?? "").trim() : "";
           const itemName = colMap.itemName >= 0 ? String(dataRow[colMap.itemName] ?? "").trim() : "";
 
-          // A row is valid if it has at least Item Description AND Qty filled
-          // Unit can sometimes be empty for certain items, so we only require desc + qty
-          if (!desc || !qty) continue;
+          // Only check: must have Item Description AND Item Name present
+          if (!desc) continue;
 
-          // Extract numeric value from qty - handle formats like "4", "4.0", "4,000", "4 nos", "4.00 sqm" etc.
-          const qtyClean = qty.replace(/,/g, "").replace(/[^0-9.\-]/g, " ").trim().split(/\s+/)[0];
-          const qtyNum = parseFloat(qtyClean);
-          
-          // Only skip if qty is truly not a number at all (like "-" or pure text)
-          // Allow qty = 0 if explicitly stated, but skip NaN
-          if (isNaN(qtyNum)) continue;
-
-          // Skip sub-total or summary rows - use stricter matching to avoid false positives
           const descLower = desc.toLowerCase().trim();
-          // Only skip if the description IS a total/subtotal line (starts with or is primarily about totals)
           const isTotalRow = /^(sub\s*-?\s*total|subtotal|grand\s*total|total)\b/i.test(descLower) ||
             /\b(sub\s*-?\s*total|subtotal|grand\s*total)\s*[:=]?\s*$/i.test(descLower);
           if (isTotalRow) continue;
 
-          // Skip section header rows only if they EXACTLY match known headers (not as substrings)
           const isSectionHeader = /^(schedule of quantities|general notes)\s*$/i.test(descLower);
           if (isSectionHeader) continue;
 
@@ -221,8 +197,39 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
           setNotification({ message: "No valid data found in the file.", type: "error" });
           return;
         }
-        setUploadedData(parsed);
-        setNotification({ message: `Parsed ${parsed.length} items from file. Review below and click "Confirm & Save".`, type: "success" });
+
+        // Filter rows: only keep rows where BOTH Item Name AND Item Description are present
+        const accepted: UploadedRow[] = [];
+        const skipped: UploadedRow[] = [];
+
+        for (const row of parsed) {
+          const hasItemName = row.itemName && row.itemName.trim() !== "";
+          const hasDescription = row.description && row.description.trim() !== "";
+          
+          if (hasItemName && hasDescription) {
+            // If qty or unit is missing, replace with "-"
+            accepted.push({
+              ...row,
+              unit: row.unit && row.unit.trim() !== "" ? row.unit : "-",
+              qty: row.qty && row.qty.trim() !== "" ? row.qty : "-",
+            });
+          } else {
+            skipped.push(row);
+          }
+        }
+
+        setUploadedData(accepted);
+        setSkippedData(skipped);
+
+        if (accepted.length === 0) {
+          setNotification({ message: `No items have both Item Name and Item Description. ${skipped.length} row(s) skipped.`, type: "error" });
+        } else {
+          let msg = `Parsed ${parsed.length} items. ${accepted.length} item(s) have both Item Name & Description and will be uploaded.`;
+          if (skipped.length > 0) {
+            msg += ` ${skipped.length} row(s) skipped (missing Item Name or Description).`;
+          }
+          setNotification({ message: msg, type: "success" });
+        }
       } catch (err: unknown) {
         hideLoading();
         const errorMessage = err instanceof Error ? err.message : "Unknown error";
@@ -253,6 +260,7 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
       if (result.success) {
         setNotification({ message: result.message, type: "success" });
         setUploadedData([]);
+        setSkippedData([]);
         setBoqNumber("");
         loadStoredBOQs();
       } else {
@@ -315,28 +323,30 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
         <label className="block border-2 border-dashed border-[var(--border)] rounded-lg p-8 text-center cursor-pointer bg-[#fafbfc] hover:border-[var(--primary)] hover:bg-[var(--primary-glow)] transition-all">
           <span className="material-icons-outlined text-[40px] text-[var(--text-muted)]">upload_file</span>
           <p className="text-sm font-semibold text-[var(--text-primary)] mt-2">Click to upload or drag & drop Excel file here</p>
-          <p className="text-[12px] text-[var(--text-muted)] mt-1">Supports .xlsx, .xls files • Headers auto-detected: Sr. No., Item Description, Unit, Qty, Item Name</p>
+          <p className="text-[12px] text-[var(--text-muted)] mt-1">Supports .xlsx, .xls files • Only rows with both Item Name and Item Description will be accepted</p>
           <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFileUpload} />
         </label>
 
-        {/* Preview */}
+        {/* Preview - Accepted Items */}
         {uploadedData.length > 0 && (
           <div className="mt-4">
             <div className="flex justify-between items-center mb-2.5">
-              <label className="text-[13px] m-0 font-semibold">Preview ({uploadedData.length} items total):</label>
+              <label className="text-[13px] m-0 font-semibold text-[var(--success)]">
+                ✓ Accepted Items ({uploadedData.length} items - Item Name & Description present):
+              </label>
               <button onClick={confirmUpload} className="px-4 py-2 bg-[var(--success)] text-white rounded-md text-[13px] font-semibold cursor-pointer hover:bg-[#1b5e20] inline-flex items-center gap-1.5">
                 <span className="material-icons-outlined text-[16px]">check_circle</span> Confirm & Save BOQ
               </button>
             </div>
-            <div className="overflow-x-auto rounded-md border border-[var(--border)] max-h-[500px] overflow-y-auto">
+            <div className="overflow-x-auto rounded-md border border-[var(--success)] max-h-[500px] overflow-y-auto">
               <table className="w-full border-collapse text-[13px]">
                 <thead className="sticky top-0">
                   <tr>
-                    <th className="bg-[#f5f7fa] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Sr No.</th>
-                    <th className="bg-[#f5f7fa] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Item Description</th>
-                    <th className="bg-[#f5f7fa] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Unit</th>
-                    <th className="bg-[#f5f7fa] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Qty</th>
-                    <th className="bg-[#f5f7fa] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Item Name</th>
+                    <th className="bg-[#e8f5e9] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Sr No.</th>
+                    <th className="bg-[#e8f5e9] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Item Description</th>
+                    <th className="bg-[#e8f5e9] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Unit</th>
+                    <th className="bg-[#e8f5e9] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Qty</th>
+                    <th className="bg-[#e8f5e9] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Item Name</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -346,13 +356,48 @@ export default function BOQManagement({ showLoading, hideLoading }: BOQManagemen
                       <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.description.substring(0, 150)}</td>
                       <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.unit}</td>
                       <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.qty}</td>
-                      <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.itemName}</td>
+                      <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)] font-medium text-[var(--success)]">{row.itemName}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <p className="mt-2 text-[12px] text-[var(--text-muted)]">Total: {uploadedData.length} items will be uploaded</p>
+          </div>
+        )}
+
+        {/* Preview - Skipped Items */}
+        {skippedData.length > 0 && (
+          <div className="mt-4">
+            <label className="text-[13px] m-0 font-semibold text-[var(--danger)] flex items-center gap-1.5 mb-2.5">
+              <span className="material-icons-outlined text-[16px]">warning</span>
+              Skipped Items ({skippedData.length} items - missing Item Name or Description):
+            </label>
+            <div className="overflow-x-auto rounded-md border border-[var(--danger)] max-h-[300px] overflow-y-auto opacity-75">
+              <table className="w-full border-collapse text-[13px]">
+                <thead className="sticky top-0">
+                  <tr>
+                    <th className="bg-[#ffebee] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Sr No.</th>
+                    <th className="bg-[#ffebee] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Item Description</th>
+                    <th className="bg-[#ffebee] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Unit</th>
+                    <th className="bg-[#ffebee] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Qty</th>
+                    <th className="bg-[#ffebee] p-3 text-left font-semibold text-[12px] uppercase border-b border-[var(--border)]">Item Name</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {skippedData.map((row, idx) => (
+                    <tr key={idx} className="hover:bg-[#fff5f5]">
+                      <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.srNo}</td>
+                      <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.description.substring(0, 150)}</td>
+                      <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.unit}</td>
+                      <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--text-secondary)]">{row.qty}</td>
+                      <td className="p-2.5 border-b border-[var(--border-light)] text-[var(--danger)] font-medium italic">{row.itemName || "(empty)"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-[12px] text-[var(--danger)]">These rows were skipped because their Item Name or Item Description is missing.</p>
           </div>
         )}
       </div>
