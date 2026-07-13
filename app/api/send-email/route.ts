@@ -7,7 +7,8 @@ import { getGoogleSheetsClient, SHEET_ID, ensureSheetExists } from "@/app/lib/go
 // For Next.js App Router, set the max duration
 export const maxDuration = 60;
 
-const UPLOAD_DIR = join(process.cwd(), ".tmp-attachments");
+const UPLOAD_DIR = join("/tmp", ".tmp-attachments");
+
 
 interface EmailItem {
   srNo: string;
