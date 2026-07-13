@@ -240,7 +240,6 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
     showLoading("Preparing attachments & sending emails...");
 
     try {
-      const attachmentData = await Promise.all(attachments.map(fileToBase64));
       const emailItems = selectedItems.map((item, idx) => ({
         srNo: (idx + 1).toString(),
         description: item.description,
@@ -254,17 +253,23 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
         .map((e) => e.trim())
         .filter((e) => e.length > 0 && e.includes("@"));
 
+      // Use FormData to avoid JSON body size limits (413 error)
+      const formData = new FormData();
+      formData.append("subject", autoSubject);
+      formData.append("items", JSON.stringify(emailItems));
+      formData.append("vendors", JSON.stringify(chosenVendors));
+      formData.append("senderEmail", senderEmail);
+      formData.append("cc", JSON.stringify(ccList));
+
+      // Append each file directly - no base64 conversion needed
+      for (const file of attachments) {
+        formData.append("attachments", file);
+      }
+
       const res = await fetch("/api/send-email", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          subject: autoSubject,
-          items: emailItems,
-          vendors: chosenVendors,
-          attachments: attachmentData,
-          senderEmail,
-          cc: ccList,
-        }),
+        // Don't set Content-Type header - browser sets it automatically with boundary for FormData
+        body: formData,
       });
 
       // Handle non-JSON responses (e.g., server body size limit errors)
