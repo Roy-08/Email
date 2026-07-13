@@ -4,7 +4,8 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 
 // Temporary storage for attachments before email sending
-const UPLOAD_DIR = join(process.cwd(), ".tmp-attachments");
+const UPLOAD_DIR = join("/tmp", ".tmp-attachments");
+
 
 export async function POST(request: Request) {
   try {
