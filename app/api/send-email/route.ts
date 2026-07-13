@@ -9,6 +9,15 @@ import { getGoogleSheetsClient, SHEET_ID, ensureSheetExists } from "@/app/lib/go
 // For Next.js App Router, set the max duration and body size
 export const maxDuration = 60;
 
+// Increase body size limit to 50MB to support large PDF attachments
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '50mb',
+    },
+  },
+};
+
 interface EmailItem {
   srNo: string;
   description: string;
