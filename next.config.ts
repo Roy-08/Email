@@ -6,8 +6,6 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "50mb",
     },
   },
-  // Increase the body size limit for API routes (App Router route handlers)
-  serverExternalPackages: ["googleapis", "nodemailer"],
 };
 
 export default nextConfig;
