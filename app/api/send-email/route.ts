@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
+import { readFile, unlink } from "fs/promises";
+import { join } from "path";
 import { getGoogleSheetsClient, SHEET_ID, ensureSheetExists } from "@/app/lib/googleSheets";
 
 // For Next.js App Router, set the max duration
 export const maxDuration = 60;
+
+const UPLOAD_DIR = join(process.cwd(), ".tmp-attachments");
 
 interface EmailItem {
   srNo: string;
@@ -17,6 +21,12 @@ interface Vendor {
   contact: string;
   mobile: string;
   email: string;
+}
+
+interface AttachmentRef {
+  fileId: string;
+  originalName: string;
+  mimeType: string;
 }
 
 interface Attachment {
@@ -65,34 +75,15 @@ const DEFAULT_SENDER: SenderEmail = "inquiry@saraswateng.com";
 
 export async function POST(request: Request) {
   try {
-    // Parse FormData (handles large file uploads without body size issues)
-    const formData = await request.formData();
-
-    const subject = formData.get("subject") as string || "";
-    const itemsJson = formData.get("items") as string || "[]";
-    const vendorsJson = formData.get("vendors") as string || "[]";
-    const senderEmailField = formData.get("senderEmail") as string || "";
-    const ccJson = formData.get("cc") as string || "[]";
-
-    const items: EmailItem[] = JSON.parse(itemsJson);
-    const vendors: Vendor[] = JSON.parse(vendorsJson);
-    const cc: string[] = JSON.parse(ccJson);
-
-    // Process file attachments from FormData
-    const attachmentFiles = formData.getAll("attachments") as File[];
-    const attachments: Attachment[] = [];
-
-    for (const file of attachmentFiles) {
-      if (file && file.size > 0) {
-        const arrayBuffer = await file.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString("base64");
-        attachments.push({
-          name: file.name,
-          mimeType: file.type || "application/octet-stream",
-          base64,
-        });
-      }
-    }
+    // Parse JSON body (small payload - attachments are already uploaded separately)
+    const { subject, items, vendors, attachmentRefs, senderEmail: senderEmailField, cc } = await request.json() as {
+      subject: string;
+      items: EmailItem[];
+      vendors: Vendor[];
+      attachmentRefs: AttachmentRef[];
+      senderEmail?: string;
+      cc?: string[];
+    };
 
     if (!subject || !subject.trim()) {
       return NextResponse.json({ success: false, message: "Subject is required!" });
@@ -102,6 +93,27 @@ export async function POST(request: Request) {
     }
     if (!vendors || vendors.length === 0) {
       return NextResponse.json({ success: false, message: "Please select at least one vendor!" });
+    }
+
+    // Load attachments from temp storage
+    const attachments: Attachment[] = [];
+    const filesToCleanup: string[] = [];
+
+    if (attachmentRefs && attachmentRefs.length > 0) {
+      for (const ref of attachmentRefs) {
+        try {
+          const filePath = join(UPLOAD_DIR, ref.fileId);
+          const fileBuffer = await readFile(filePath);
+          attachments.push({
+            name: ref.originalName,
+            mimeType: ref.mimeType,
+            base64: fileBuffer.toString("base64"),
+          });
+          filesToCleanup.push(filePath);
+        } catch (err) {
+          console.error(`Failed to read attachment ${ref.fileId}:`, err);
+        }
+      }
     }
 
     // Resolve the chosen sender account (defaults to inquiry@).
@@ -157,11 +169,8 @@ export async function POST(request: Request) {
     descHtml += '<th style="padding:10px;">Quantity</th>';
     descHtml += "</tr>";
 
-    let descPlain = "";
-
     for (let d = 0; d < items.length; d++) {
       const item = items[d];
-      descPlain += `${item.srNo}. ${item.description} | Unit: ${item.unit} | Qty: ${item.qty}\n`;
       const rowBg = d % 2 === 0 ? "#f8f9fa" : "#ffffff";
       descHtml += `<tr style="background-color:${rowBg};">`;
       descHtml += `<td style="text-align:center; padding:8px;">${item.srNo}</td>`;
@@ -171,9 +180,6 @@ export async function POST(request: Request) {
       descHtml += "</tr>";
     }
     descHtml += "</table>";
-
-    // Suppress unused variable warning
-    void descPlain;
 
     // Send emails
     let sent = 0;
@@ -248,6 +254,13 @@ export async function POST(request: Request) {
       }
     }
 
+    // Cleanup temp files after sending
+    for (const filePath of filesToCleanup) {
+      try {
+        await unlink(filePath);
+      } catch { /* ignore cleanup errors */ }
+    }
+
     return NextResponse.json({
       success: true,
       sent,
@@ -277,12 +290,6 @@ function wrapBase64(base64: string): string {
 /**
  * Build a raw MIME message string for Gmail API.
  * Supports HTML content and file attachments.
- * 
- * Key fixes:
- * 1. Base64 content is line-wrapped to 76 chars per MIME standard
- * 2. HTML body is base64-encoded to handle special characters
- * 3. Proper CRLF line endings throughout
- * 4. Clean base64 data from attachments (remove any whitespace)
  */
 function buildRawMessage({
   from,
@@ -350,7 +357,6 @@ function buildRawMessage({
     const cleanBase64 = att.base64.replace(/[\r\n\s]/g, "");
     const wrappedBase64 = wrapBase64(cleanBase64);
     const mimeType = att.mimeType || "application/octet-stream";
-    // Encode filename for Content-Type and Content-Disposition to handle special chars
     const safeName = att.name.replace(/"/g, '\\"');
 
     message += CRLF + [
