@@ -2,21 +2,8 @@ import { NextResponse } from "next/server";
 import { google } from "googleapis";
 import { getGoogleSheetsClient, SHEET_ID, ensureSheetExists } from "@/app/lib/googleSheets";
 
-// Note: In Next.js App Router, body size is controlled by the runtime/server config.
-// The request body limit for serverless functions is typically 4.5MB by default.
-// For larger attachments, consider using streaming uploads or external storage.
-
-// For Next.js App Router, set the max duration and body size
+// For Next.js App Router, set the max duration
 export const maxDuration = 60;
-
-// Increase body size limit to 50MB to support large PDF attachments
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '50mb',
-    },
-  },
-};
 
 interface EmailItem {
   srNo: string;
