@@ -65,14 +65,34 @@ const DEFAULT_SENDER: SenderEmail = "inquiry@saraswateng.com";
 
 export async function POST(request: Request) {
   try {
-    const { subject, items, vendors, attachments, senderEmail, cc } = (await request.json()) as {
-      subject: string;
-      items: EmailItem[];
-      vendors: Vendor[];
-      attachments: Attachment[];
-      senderEmail?: string;
-      cc?: string[];
-    };
+    // Parse FormData (handles large file uploads without body size issues)
+    const formData = await request.formData();
+
+    const subject = formData.get("subject") as string || "";
+    const itemsJson = formData.get("items") as string || "[]";
+    const vendorsJson = formData.get("vendors") as string || "[]";
+    const senderEmailField = formData.get("senderEmail") as string || "";
+    const ccJson = formData.get("cc") as string || "[]";
+
+    const items: EmailItem[] = JSON.parse(itemsJson);
+    const vendors: Vendor[] = JSON.parse(vendorsJson);
+    const cc: string[] = JSON.parse(ccJson);
+
+    // Process file attachments from FormData
+    const attachmentFiles = formData.getAll("attachments") as File[];
+    const attachments: Attachment[] = [];
+
+    for (const file of attachmentFiles) {
+      if (file && file.size > 0) {
+        const arrayBuffer = await file.arrayBuffer();
+        const base64 = Buffer.from(arrayBuffer).toString("base64");
+        attachments.push({
+          name: file.name,
+          mimeType: file.type || "application/octet-stream",
+          base64,
+        });
+      }
+    }
 
     if (!subject || !subject.trim()) {
       return NextResponse.json({ success: false, message: "Subject is required!" });
@@ -86,7 +106,7 @@ export async function POST(request: Request) {
 
     // Resolve the chosen sender account (defaults to inquiry@).
     const chosenSenderKey: SenderEmail =
-      senderEmail && senderEmail in SENDER_ACCOUNTS ? (senderEmail as SenderEmail) : DEFAULT_SENDER;
+      senderEmailField && senderEmailField in SENDER_ACCOUNTS ? (senderEmailField as SenderEmail) : DEFAULT_SENDER;
     const senderAccount = SENDER_ACCOUNTS[chosenSenderKey];
 
     if (!senderAccount.clientId || !senderAccount.clientSecret || !senderAccount.refreshToken) {
