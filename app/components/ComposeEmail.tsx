@@ -208,17 +208,7 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
     return "bg-gray-500";
   };
 
-  const fileToBase64 = (file: File): Promise<{ name: string; mimeType: string; base64: string }> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = (reader.result as string).split(",")[1];
-        resolve({ name: file.name, mimeType: file.type, base64 });
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  };
+
 
   const sendEmails = async () => {
     setNotification(null);
