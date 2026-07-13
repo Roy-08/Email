@@ -227,9 +227,77 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
     }
 
     setSending(true);
-    showLoading("Preparing attachments & sending emails...");
+    showLoading("Uploading attachments...");
 
     try {
+      // Step 1: Upload attachments in chunks to avoid 413 body size limit
+      // Each chunk is max 2MB to stay well within platform limits
+      const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB per chunk
+      const attachmentRefs: { fileId: string; originalName: string; mimeType: string }[] = [];
+
+      for (let i = 0; i < attachments.length; i++) {
+        const file = attachments[i];
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        let fileId = "";
+
+        showLoading(`Uploading attachment ${i + 1}/${attachments.length}: ${file.name}...`);
+
+        for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+          const start = chunkIdx * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunkBlob = file.slice(start, end);
+
+          const formData = new FormData();
+          formData.append("chunk", chunkBlob);
+          formData.append("chunkIndex", chunkIdx.toString());
+          formData.append("totalChunks", totalChunks.toString());
+          formData.append("fileName", file.name);
+          formData.append("mimeType", file.type || "application/octet-stream");
+          if (fileId) formData.append("fileId", fileId);
+
+          if (totalChunks > 1) {
+            showLoading(`Uploading ${file.name} (${Math.round(((chunkIdx + 1) / totalChunks) * 100)}%)...`);
+          }
+
+          const uploadRes = await fetch("/api/upload-attachment", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!uploadRes.ok) {
+            const errorMsg = uploadRes.status === 413
+              ? `File "${file.name}" chunk is too large. This should not happen - please report this issue.`
+              : `Failed to upload "${file.name}" (status ${uploadRes.status})`;
+            setNotification({ message: errorMsg, type: "error" });
+            hideLoading();
+            setSending(false);
+            return;
+          }
+
+          const uploadResult = await uploadRes.json();
+          if (!uploadResult.success) {
+            setNotification({ message: `Failed to upload "${file.name}": ${uploadResult.message}`, type: "error" });
+            hideLoading();
+            setSending(false);
+            return;
+          }
+
+          // Save fileId from first chunk response
+          if (chunkIdx === 0) {
+            fileId = uploadResult.fileId;
+          }
+        }
+
+        attachmentRefs.push({
+          fileId,
+          originalName: file.name,
+          mimeType: file.type || "application/octet-stream",
+        });
+      }
+
+      // Step 2: Send email with attachment references (small JSON payload)
+      showLoading("Sending emails...");
+
       const emailItems = selectedItems.map((item, idx) => ({
         srNo: (idx + 1).toString(),
         description: item.description,
@@ -243,31 +311,25 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
         .map((e) => e.trim())
         .filter((e) => e.length > 0 && e.includes("@"));
 
-      // Use FormData to avoid JSON body size limits (413 error)
-      const formData = new FormData();
-      formData.append("subject", autoSubject);
-      formData.append("items", JSON.stringify(emailItems));
-      formData.append("vendors", JSON.stringify(chosenVendors));
-      formData.append("senderEmail", senderEmail);
-      formData.append("cc", JSON.stringify(ccList));
-
-      // Append each file directly - no base64 conversion needed
-      for (const file of attachments) {
-        formData.append("attachments", file);
-      }
-
       const res = await fetch("/api/send-email", {
         method: "POST",
-        // Don't set Content-Type header - browser sets it automatically with boundary for FormData
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: autoSubject,
+          items: emailItems,
+          vendors: chosenVendors,
+          attachmentRefs,
+          senderEmail,
+          cc: ccList,
+        }),
       });
 
-      // Handle non-JSON responses (e.g., server body size limit errors)
+      // Handle non-JSON responses
       const contentType = res.headers.get("content-type") || "";
       if (!res.ok && !contentType.includes("application/json")) {
         const textResponse = await res.text();
         const errorMsg = res.status === 413
-          ? "Attachments are too large. Please reduce total attachment size to under 25MB and try again."
+          ? "Request too large. Please reduce the number of items or vendors and try again."
           : `Server error (${res.status}): ${textResponse.substring(0, 100)}`;
         setNotification({ message: errorMsg, type: "error" });
         hideLoading();
@@ -279,7 +341,7 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
       try {
         result = await res.json();
       } catch {
-        setNotification({ message: "Unexpected server response. Please try with smaller attachments or try again later.", type: "error" });
+        setNotification({ message: "Unexpected server response. Please try again later.", type: "error" });
         hideLoading();
         setSending(false);
         return;
