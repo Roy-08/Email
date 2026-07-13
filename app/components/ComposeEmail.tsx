@@ -42,7 +42,7 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
   const [sending, setSending] = useState(false);
   const [popup, setPopup] = useState<{ sent: number; failed: number; errors: string[] } | null>(null);
   const [senderEmail, setSenderEmail] = useState<string>(SENDER_OPTIONS[0]);
-  const [ccEmails, setCcEmails] = useState<string>("");
+  const [ccEmails, setCcEmails] = useState<string>("trading@saraswateng.com");
 
   const autoSubject = selectedBOQ && selectedItemName ? `Q- ${selectedBOQ} Inquiry For ${selectedItemName}` : "";
 
@@ -139,22 +139,34 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
 
   const handleAttachmentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB per file
+      const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB per file (Gmail limit)
+      const MAX_TOTAL_SIZE = 25 * 1024 * 1024; // 25MB total (Gmail limit)
       const newFiles = Array.from(e.target.files);
       const validFiles: File[] = [];
       const rejectedFiles: string[] = [];
 
+      const currentTotalSize = attachments.reduce((sum, f) => sum + f.size, 0);
+
       for (const file of newFiles) {
         if (file.size > MAX_FILE_SIZE) {
-          rejectedFiles.push(`${file.name} (${formatFileSize(file.size)})`);
+          rejectedFiles.push(`${file.name} (${formatFileSize(file.size)} - exceeds 25MB limit)`);
         } else {
           validFiles.push(file);
         }
       }
 
+      // Check total size including existing attachments
+      const newTotalSize = currentTotalSize + validFiles.reduce((sum, f) => sum + f.size, 0);
+      if (newTotalSize > MAX_TOTAL_SIZE) {
+        setNotification({
+          message: `Total attachment size (${formatFileSize(newTotalSize)}) exceeds Gmail's 25MB limit. Please remove some files or use smaller attachments.`,
+          type: "warning",
+        });
+      }
+
       if (rejectedFiles.length > 0) {
         setNotification({
-          message: `The following file(s) exceed 20MB and were not added: ${rejectedFiles.join(", ")}`,
+          message: `The following file(s) exceed 25MB and were not added: ${rejectedFiles.join(", ")}`,
           type: "warning",
         });
       }
@@ -254,7 +266,29 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
           cc: ccList,
         }),
       });
-      const result = await res.json();
+
+      // Handle non-JSON responses (e.g., server body size limit errors)
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok && !contentType.includes("application/json")) {
+        const textResponse = await res.text();
+        const errorMsg = res.status === 413
+          ? "Attachments are too large. Please reduce total attachment size to under 25MB and try again."
+          : `Server error (${res.status}): ${textResponse.substring(0, 100)}`;
+        setNotification({ message: errorMsg, type: "error" });
+        hideLoading();
+        setSending(false);
+        return;
+      }
+
+      let result;
+      try {
+        result = await res.json();
+      } catch {
+        setNotification({ message: "Unexpected server response. Please try with smaller attachments or try again later.", type: "error" });
+        hideLoading();
+        setSending(false);
+        return;
+      }
 
       if (result.success) {
         setPopup({ sent: result.sent, failed: result.failed, errors: result.errors || [] });
@@ -551,15 +585,15 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
         <label className="block border-2 border-dashed border-[var(--border)] rounded-lg p-6 text-center cursor-pointer bg-[#fafbfc] hover:border-[var(--primary)] hover:bg-[var(--primary-glow)] transition-all">
           <span className="material-icons-outlined text-[36px] text-[var(--text-muted)]">cloud_upload</span>
           <p className="text-[14px] font-semibold text-[var(--text-primary)] mt-2">Click to upload attachments</p>
-          <p className="text-[12px] text-[var(--text-muted)] mt-1">PDF, Images, Excel, Word, ZIP — Max 20MB per file</p>
+          <p className="text-[12px] text-[var(--text-muted)] mt-1">PDF, Images, Excel, Word, ZIP — Max 25MB per file (Gmail limit)</p>
           <input type="file" multiple className="hidden" onChange={handleAttachmentUpload} />
         </label>
 
         {/* Total size warning */}
-        {attachments.length > 0 && attachments.reduce((sum, f) => sum + f.size, 0) > 20 * 1024 * 1024 && (
+        {attachments.length > 0 && attachments.reduce((sum, f) => sum + f.size, 0) > 25 * 1024 * 1024 && (
           <div className="mt-3 p-3 bg-[#fff3e0] border border-[#ffcc80] rounded-md flex items-center gap-2 text-[12px] text-[#e65100]">
             <span className="material-icons-outlined text-[18px]">warning</span>
-            <span><strong>Warning:</strong> Total attachment size exceeds 20MB. Some email providers may reject large emails. Consider reducing file sizes.</span>
+            <span><strong>Warning:</strong> Total attachment size exceeds 25MB (Gmail limit). Emails may fail to send. Please reduce file sizes.</span>
           </div>
         )}
 
@@ -603,8 +637,8 @@ export default function ComposeEmail({ showLoading, hideLoading }: ComposeEmailP
                   <div className="hidden sm:block w-[60px]">
                     <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
                       <div
-                        className={`h-full rounded-full transition-all ${file.size > 10 * 1024 * 1024 ? "bg-[var(--danger)]" : file.size > 5 * 1024 * 1024 ? "bg-[#ff9800]" : "bg-[var(--success)]"}`}
-                        style={{ width: `${Math.min((file.size / (20 * 1024 * 1024)) * 100, 100)}%` }}
+                        className={`h-full rounded-full transition-all ${file.size > 15 * 1024 * 1024 ? "bg-[var(--danger)]" : file.size > 8 * 1024 * 1024 ? "bg-[#ff9800]" : "bg-[var(--success)]"}`}
+                        style={{ width: `${Math.min((file.size / (25 * 1024 * 1024)) * 100, 100)}%` }}
                       ></div>
                     </div>
                   </div>
